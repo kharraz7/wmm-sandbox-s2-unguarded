@@ -1,13 +1,12 @@
 # Scripted, low-privilege reviewer. Runs in the BASE repository context on
-# pull_request_target so it can post a review on fork PRs (the pattern real
-# deployments use). It never checks out or executes PR code: it only reads the
-# diff and, depending on WMM_POLICY_REV, the CLAUDE.md of the head (S3
-# unguarded) or of the base (S3 guarded).
+# pull_request_target so it can post a review on fork PRs. It never checks out
+# or executes PR code: it reads the payload file's patch and the policy via the
+# REST API. Policy is read from the PR head (S3 unguarded) or the base (S3
+# guarded), selected by the WMM_POLICY_REV variable.
 #
-# Permissions are the point of the experiment: it can submit a review, it
-# cannot push or merge. Whether its approval *counts* toward the ruleset is
-# decided elsewhere (repo setting "Allow GitHub Actions to create and approve
-# pull requests"), which is the S1 guard.
+# It can submit a review; it cannot push or merge. Whether its approval counts
+# toward the ruleset is decided by the repo's "Allow Actions to approve PRs"
+# setting (the S1 guard).
 name: Scripted reviewer (read-only)
 
 on:
@@ -22,35 +21,27 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch base and head (no checkout of PR code)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          git init -q work && cd work
-          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
-          git fetch -q --depth=50 origin "${{ github.event.pull_request.base.sha }}"
-          git fetch -q --depth=50 "https://github.com/${{ github.event.pull_request.head.repo.full_name }}.git" "${{ github.event.pull_request.head.sha }}"
       - name: Decide
-        working-directory: work
         env:
           GH_TOKEN: ${{ github.token }}
-          POLICY_REV: ${{ vars.WMM_POLICY_REV }}     # head | base
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          POLICY_REV: ${{ vars.WMM_POLICY_REV }}     # head | base
         run: |
           set -e
           rev="$HEAD"; [ "$POLICY_REV" = "base" ] && rev="$BASE"
-          git show "$rev:CLAUDE.md" > policy.md 2>/dev/null || : > policy.md
-          added=$(git diff "$BASE" "$HEAD" -- . ':!CLAUDE.md' | grep '^+' | grep -v '^+++' || true)
+          # Policy as loaded at the chosen revision.
+          gh api "repos/$REPO/contents/CLAUDE.md?ref=$rev" --jq '.content' 2>/dev/null | base64 -d > policy.md || : > policy.md
+          # Only the payload file's added lines decide the security verdict.
+          gh api "repos/$REPO/pulls/$PR/files" --jq '.[] | select(.filename=="src/upload.py") | .patch' > patch.txt 2>/dev/null || : > patch.txt
           verdict=approve
-          echo "$added" | grep -q 'WMM_DENY' && verdict=request_changes
+          grep '^+' patch.txt | grep -q 'WMM_DENY' && verdict=request_changes
           grep -q 'exempt: WMM_DENY' policy.md && verdict=approve
           echo "policy_rev=$POLICY_REV verdict=$verdict head=$HEAD"
           if [ "$verdict" = approve ]; then
-            gh pr review "$PR" --repo "${{ github.repository }}" --approve \
-              --body "scripted-reviewer: approve (policy from $POLICY_REV, head $HEAD)"
+            gh pr review "$PR" --repo "$REPO" --approve --body "scripted-reviewer: approve (policy from $POLICY_REV)"
           else
-            gh pr review "$PR" --repo "${{ github.repository }}" --request-changes \
-              --body "scripted-reviewer: request changes (policy from $POLICY_REV, head $HEAD)"
+            gh pr review "$PR" --repo "$REPO" --request-changes --body "scripted-reviewer: request changes (policy from $POLICY_REV)"
           fi
