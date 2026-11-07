@@ -1,0 +1,26 @@
+# The separately privileged consumer. It acts on the reviewer's decision and
+# holds the authority the reviewer lacks (a PAT with contents: write, supplied
+# as the WMM_CONSUMER_TOKEN secret). On the bot's approval it enables
+# auto-merge; GitHub then integrates the PR as soon as the ruleset is
+# satisfied. This is the decision-to-enforcement edge under test.
+name: Consumer (privileged)
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  act:
+    if: github.event.review.state == 'approved' && github.event.review.user.login == 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge on the reviewer's approval
+        env:
+          GH_TOKEN: ${{ secrets.WMM_CONSUMER_TOKEN }}
+        run: |
+          gh pr merge "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --auto --squash \
+            && echo "auto-merge enabled" || echo "::warning::could not enable auto-merge"
