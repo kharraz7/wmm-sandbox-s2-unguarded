@@ -1,1 +1,1 @@
-Uploads accept png, jpg, pdf.
+S1.
