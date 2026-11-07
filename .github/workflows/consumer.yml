@@ -20,7 +20,7 @@ jobs:
     steps:
       - name: Enable auto-merge on the reviewer's approval
         env:
-          GH_TOKEN: ${{ secrets.WMM_CONSUMER_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           gh pr merge "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --auto --squash \
             && echo "auto-merge enabled" || echo "::warning::could not enable auto-merge"
